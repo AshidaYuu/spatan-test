@@ -310,18 +310,18 @@ const RAW_DATA_MASTER_800 = `1be〜である、いる、ある、存在する[�
 302time時、時間、〜回、〜度、〜倍、とき、じかん[タイム]
 303hour時間、じかん[アワー]
 304minute分、ふん[ミニット]
-305January1月、いちがつ[ジャニュアリー]
-306February2月、にがつ[フェブラリー]
-307March3月、さんがつ[マーチ]
-308April4月、しがつ[エイプリル]
-309May5月、ごがつ[メイ]
-310June6月、ろくがつ[ジューン]
-311July7月、しちがつ[ジュライ]
-312August8月、はちがつ[オーガスト]
-313September9月、くがつ[セプテンバー]
-314October10月、じゅうがつ[オクトーバー]
-315November11月、じゅういちがつ[ノーベンバー]
-316December12月、じゅうにがつ[ディセンバー]
+305January 1月、いちがつ[ジャニュアリー]
+306February 2月、にがつ[フェブラリー]
+307March 3月、さんがつ[マーチ]
+308April 4月、しがつ[エイプリル]
+309May 5月、ごがつ[メイ]
+310June 6月、ろくがつ[ジューン]
+311July 7月、しちがつ[ジュライ]
+312August 8月、はちがつ[オーガスト]
+313September 9月、くがつ[セプテンバー]
+314October 10月、じゅうがつ[オクトーバー]
+315November 11月、じゅういちがつ[ノーベンバー]
+316December 12月、じゅうにがつ[ディセンバー]
 317Sunday日曜日、にちようび[サンデー]
 318Monday月曜日、げつようび[マンデー]
 319Tuesday火曜日、かようび[チューズデー]
@@ -2043,6 +2043,22 @@ const DATA_SETS = {
 // 2. 型定義 & ユーティリティ
 // ==========================================
 
+const normalizeWordAndMeaning = (word, meaning) => {
+  let normalizedWord = word.trim();
+  let normalizedMeaning = meaning.trim();
+
+  const trailingDigitsMatch = normalizedWord.match(/^(.*?)(\d+)$/);
+  if (trailingDigitsMatch) {
+    const baseWord = trailingDigitsMatch[1].trim();
+    const digits = trailingDigitsMatch[2];
+    if (baseWord.length > 0) {
+      normalizedWord = baseWord;
+      normalizedMeaning = `${digits}${normalizedMeaning}`;
+    }
+  }
+
+  return { word: normalizedWord, meaning: normalizedMeaning };
+};
 const parseWordList = (rawData) => {
   const lines = rawData.split('\n').filter(line => line.trim() !== '');
   
@@ -2056,16 +2072,18 @@ const parseWordList = (rawData) => {
         return { id: 0, word: line, meaning: 'Parse Error', pronunciation: '', variations: [] };
       }
       const id = parseInt(fallbackMatch[1], 10);
-      const word = fallbackMatch[2].trim();
-      const meaningRaw = fallbackMatch[3].trim();
+      let word = fallbackMatch[2].trim();
+      let meaningRaw = fallbackMatch[3].trim();
+      ({ word, meaning: meaningRaw } = normalizeWordAndMeaning(word, meaningRaw));
       const splitRegex = /[、,／/\s\[\]\(\)（）]+/;
       const variations = meaningRaw.split(splitRegex).filter(s => s.length > 0);
       return { id, word, meaning: meaningRaw, pronunciation: '', variations };
     }
 
     const id = parseInt(match[1], 10);
-    const word = match[2].trim();
-    const meaningRaw = match[3].trim();
+    let word = match[2].trim();
+    let meaningRaw = match[3].trim();
+    ({ word, meaning: meaningRaw } = normalizeWordAndMeaning(word, meaningRaw));
     const pronunciation = match[5] ? match[5].trim() : ''; // []の中身
 
     // 区切り文字を強化
@@ -2706,6 +2724,5 @@ export default function App() {
       </div>
     );
   }
-
   return null;
 }
