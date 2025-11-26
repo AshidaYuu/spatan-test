@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Play, RotateCcw, CheckCircle, XCircle, Trophy, Settings, BookOpen, Shuffle, ListOrdered, Volume2, Edit2, Clock, Download, Layers, Eye, ThumbsUp, ThumbsDown, Library, Keyboard, Repeat, AlertCircle, Sparkles } from 'lucide-react';
+import { Play, RotateCcw, CheckCircle, XCircle, Trophy, Settings, BookOpen, Shuffle, ListOrdered, Volume2, Edit2, Clock, Download, Layers, Eye, ThumbsUp, ThumbsDown, Library, Keyboard, Repeat, AlertCircle, Sparkles, Mic, MicOff, Activity } from 'lucide-react';
 
 // ==========================================
 // 1. データセット定義
@@ -2112,6 +2112,12 @@ const shuffleArray = (array) => {
   return newArray;
 };
 
+const attachDatasetMetadata = (words, datasetId) =>
+  words.map(word => ({ ...word, datasetId }));
+
+const VOICE_THRESHOLD = 0.22;
+const VOLUME_VISUAL_MULTIPLIER = 4;
+
 // ==========================================
 // 3. メインコンポーネント
 // ==========================================
@@ -2140,14 +2146,178 @@ export default function App() {
   // 復習モード用のState
   const [isReviewMode, setIsReviewMode] = useState(false);
   const [reviewTargetWords, setReviewTargetWords] = useState([]); // 復習で固定された単語リスト
+  
+  // 間違い単語リスト
+  const [mistakeWords, setMistakeWords] = useState([]);
+  const [isMistakeMode, setIsMistakeMode] = useState(false);
+
+  const [micModeEnabled, setMicModeEnabled] = useState(true);
+  const [micStatus, setMicStatus] = useState('idle');
+  const [volumeLevel, setVolumeLevel] = useState(0);
+  const [voiceTriggerSatisfied, setVoiceTriggerSatisfied] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const storedValue = window.localStorage.getItem('voice-trigger:mic-mode');
+    if (storedValue !== null) {
+      setMicModeEnabled(storedValue === 'true');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('voice-trigger:mic-mode', micModeEnabled ? 'true' : 'false');
+  }, [micModeEnabled]);
+
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const dataArrayRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const rafRef = useRef(null);
+  const voiceTriggerSatisfiedRef = useRef(false);
 
   const timerRef = useRef(null);
+  useEffect(() => {
+    voiceTriggerSatisfiedRef.current = voiceTriggerSatisfied;
+  }, [voiceTriggerSatisfied]);
+
+  const stopAudioMonitoring = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (analyserRef.current) {
+      try {
+        analyserRef.current.disconnect();
+      } catch (error) {
+        console.warn('Failed to disconnect analyser node', error);
+      }
+      analyserRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    dataArrayRef.current = null;
+    setVolumeLevel(0);
+  }, []);
+
+  const isMicOperational = micStatus !== 'error' && micStatus !== 'unsupported';
+  const shouldEnforceVoiceTrigger = micModeEnabled && isMicOperational;
+
+  useEffect(() => {
+    if (appState !== 'test' || flashcardPhase !== 'question') return;
+    setVoiceTriggerSatisfied(!shouldEnforceVoiceTrigger);
+  }, [appState, currentIndex, flashcardPhase, shouldEnforceVoiceTrigger]);
+
+  const addWordToMistakeList = useCallback((word) => {
+    if (!word) return;
+    setMistakeWords(prev => {
+      const exists = prev.some(item => item.id === word.id && item.datasetId === word.datasetId);
+      if (exists) return prev;
+      return [...prev, { ...word }];
+    });
+  }, []);
+
+  const removeWordFromMistakeList = useCallback((word) => {
+    if (!word) return;
+    setMistakeWords(prev => prev.filter(item => !(item.id === word.id && item.datasetId === word.datasetId)));
+  }, []);
+
+  const goHome = useCallback(() => {
+    setAppState('home');
+    setIsMistakeMode(false);
+    setIsReviewMode(false);
+    setFlashcardPhase('question');
+  }, []);
 
   // データセットが変更されたら、rangeEndを自動調整
   useEffect(() => {
     setRangeEnd(Math.min(10, wordList.length));
     setRangeStart(1);
   }, [wordList.length]);
+
+  useEffect(() => {
+    if (!micModeEnabled || appState !== 'test') {
+      stopAudioMonitoring();
+      setMicStatus('idle');
+      return;
+    }
+
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      setMicStatus('unsupported');
+      return;
+    }
+
+    let isCancelled = false;
+
+    const setupMicrophone = async () => {
+      try {
+        setMicStatus('requesting');
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (isCancelled) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) {
+          setMicStatus('unsupported');
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+
+        const audioCtx = new AudioContextClass();
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+
+        audioContextRef.current = audioCtx;
+        analyserRef.current = analyser;
+        mediaStreamRef.current = stream;
+        dataArrayRef.current = new Uint8Array(analyser.fftSize);
+
+        setMicStatus('listening');
+
+        const updateVolume = () => {
+          if (!analyserRef.current || !dataArrayRef.current) return;
+
+          analyserRef.current.getByteTimeDomainData(dataArrayRef.current);
+          let sumSquares = 0;
+          for (let i = 0; i < dataArrayRef.current.length; i += 1) {
+            const value = (dataArrayRef.current[i] - 128) / 128;
+            sumSquares += value * value;
+          }
+          const rms = Math.sqrt(sumSquares / dataArrayRef.current.length);
+          setVolumeLevel(rms);
+
+          if (micModeEnabled && !voiceTriggerSatisfiedRef.current && rms >= VOICE_THRESHOLD) {
+            setVoiceTriggerSatisfied(true);
+          }
+
+          rafRef.current = requestAnimationFrame(updateVolume);
+        };
+
+        updateVolume();
+      } catch (error) {
+        console.error('Microphone access failed', error);
+        setMicStatus('error');
+        stopAudioMonitoring();
+      }
+    };
+
+    setupMicrophone();
+
+    return () => {
+      isCancelled = true;
+      stopAudioMonitoring();
+    };
+  }, [micModeEnabled, appState, stopAudioMonitoring]);
 
   const speakWord = useCallback((text, onEnd) => {
     if ('speechSynthesis' in window) {
@@ -2174,15 +2344,17 @@ export default function App() {
       return;
     }
 
+    words = attachDatasetMetadata(words, selectedDatasetId);
     if (isRandom) words = shuffleArray(words);
 
     setTestWords(words);
     setCurrentIndex(0);
     setResults([]);
     setIsReviewMode(false); // 通常テスト
+    setIsMistakeMode(false);
     setFlashcardPhase('question');
     setAppState('test');
-  }, [rangeStart, rangeEnd, wordList, isRandom]);
+  }, [rangeStart, rangeEnd, wordList, isRandom, selectedDatasetId]);
 
   // 復習モード開始（初回）
   const startReview = useCallback(() => {
@@ -2191,6 +2363,7 @@ export default function App() {
     
     if (reviewWords.length === 0) return;
 
+    reviewWords = attachDatasetMetadata(reviewWords, selectedDatasetId);
     // 変更: 復習モードは設定に関わらず常にランダムにシャッフルする
     reviewWords = shuffleArray(reviewWords);
 
@@ -2198,12 +2371,13 @@ export default function App() {
     setReviewTargetWords(reviewWords);
     setTestWords(reviewWords);
     setIsReviewMode(true); // 復習モードON
+    setIsMistakeMode(false);
 
     setCurrentIndex(0);
     setResults([]); 
     setFlashcardPhase('question');
     setAppState('test');
-  }, [results, wordList]); // isRandomへの依存を削除
+  }, [results, wordList, selectedDatasetId]); // isRandomへの依存を削除
 
   // 復習リトライ（リストを減らさずに再挑戦）
   const retryReview = useCallback(() => {
@@ -2214,8 +2388,43 @@ export default function App() {
     setCurrentIndex(0);
     setResults([]); 
     setFlashcardPhase('question');
+    setIsMistakeMode(false);
     setAppState('test');
   }, [reviewTargetWords]); // isRandomへの依存を削除
+
+  const startMistakeDrill = useCallback(() => {
+    if (mistakeWords.length === 0) return;
+    let words = shuffleArray([...mistakeWords]);
+
+    setTestWords(words);
+    setCurrentIndex(0);
+    setResults([]);
+    setIsReviewMode(false);
+    setIsMistakeMode(true);
+    setFlashcardPhase('question');
+    setAppState('test');
+  }, [mistakeWords]);
+
+  const handleRemoveCurrentMistakeWord = useCallback(() => {
+    if (!isMistakeMode) return;
+    const currentWord = testWords[currentIndex];
+    if (!currentWord) return;
+
+    removeWordFromMistakeList(currentWord);
+    const updatedWords = testWords.filter(word => !(word.id === currentWord.id && word.datasetId === currentWord.datasetId));
+    setTestWords(updatedWords);
+
+    if (updatedWords.length === 0) {
+      setResults([]);
+      setCurrentIndex(0);
+      goHome();
+      return;
+    }
+
+    const nextIndex = Math.min(currentIndex, updatedWords.length - 1);
+    setCurrentIndex(nextIndex);
+    setFlashcardPhase('question');
+  }, [isMistakeMode, testWords, currentIndex, removeWordFromMistakeList, goHome]);
 
   // 問題開始・フェーズ変更時の処理
   useEffect(() => {
@@ -2322,6 +2531,10 @@ export default function App() {
     const currentWord = testWords[currentIndex];
     if (!currentWord) return;
 
+    if (!isCorrect) {
+        addWordToMistakeList(currentWord);
+    }
+
     // --- 変更点: 復習モードのサドンデス機能 ---
     if (isReviewMode && !isCorrect) {
         alert("【復習モード】不正解！最初からやり直しです。（出題順をシャッフルします）");
@@ -2343,7 +2556,8 @@ export default function App() {
         pronunciation: currentWord.pronunciation,
         transcript: '自己採点',
         isCorrect: isCorrect,
-        status: isCorrect ? 'correct' : 'incorrect'
+        status: isCorrect ? 'correct' : 'incorrect',
+        datasetId: currentWord.datasetId
     };
 
     setResults(prev => [...prev, result]);
@@ -2354,7 +2568,7 @@ export default function App() {
     } else {
         setAppState('result');
     }
-  }, [testWords, currentIndex, isReviewMode, isRandom]);
+  }, [testWords, currentIndex, isReviewMode, isRandom, addWordToMistakeList]);
 
   const handleToggleCorrect = (index) => {
     setResults(prev => {
@@ -2385,6 +2599,9 @@ export default function App() {
           // Space or Enter to show answer
           if (e.code === 'Space' || e.key === 'Enter' || e.key === 'ArrowDown') {
             e.preventDefault(); // Prevent scroll
+            if (shouldEnforceVoiceTrigger && !voiceTriggerSatisfied) {
+              return;
+            }
             setFlashcardPhase('answer');
           }
         } else if (flashcardPhase === 'answer') {
@@ -2401,7 +2618,7 @@ export default function App() {
         // Result画面でのキー操作
         if (e.key === 'Enter') {
              e.preventDefault();
-             setAppState('home');
+             goHome();
         }
         // 'R'キーで復習スタートできるようにしても良いかも
       }
@@ -2409,7 +2626,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [appState, flashcardPhase, startTest, handleSelfCheck]);
+  }, [appState, flashcardPhase, startTest, handleSelfCheck, goHome, shouldEnforceVoiceTrigger, voiceTriggerSatisfied]);
 
 
   const handleDownloadPDF = () => {
@@ -2520,6 +2737,27 @@ export default function App() {
               </select>
             </div>
 
+            {/* マイクモード */}
+            <div className="bg-white rounded-lg border border-slate-200 p-4 flex items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 text-slate-700 font-semibold">
+                  {micModeEnabled ? <Mic className="w-4 h-4 text-indigo-600" /> : <MicOff className="w-4 h-4 text-slate-400" />}
+                  <span>マイクモード</span>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  {micModeEnabled ? '声を出すと「答えを見る」ボタンが解放されます' : 'OFFにするとボタンは常に利用できます'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMicModeEnabled(prev => !prev)}
+                className={`relative inline-flex h-8 w-16 items-center rounded-full transition-colors ${micModeEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                aria-pressed={micModeEnabled}
+              >
+                <span className={`inline-block h-6 w-6 transform rounded-full bg-white shadow transition ${micModeEnabled ? 'translate-x-8' : 'translate-x-1'}`}></span>
+              </button>
+            </div>
+
             {/* 出題範囲 */}
             <div>
               <div className="flex items-center gap-2 mb-4 text-slate-700 font-semibold"><Settings className="w-5 h-5" /><span>出題範囲 (No.1 - {wordList.length})</span></div>
@@ -2554,6 +2792,41 @@ export default function App() {
           <button onClick={startTest} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl shadow-lg transition-all transform active:scale-95 flex items-center justify-center gap-2">
             <Play className="w-5 h-5" /> テストを開始 <span className="text-indigo-200 text-xs font-normal ml-2">[Enter]</span>
           </button>
+
+          <div className="mt-6 bg-slate-100 rounded-xl p-5 text-left border border-slate-200">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 text-slate-600 font-semibold mb-1">
+                  <AlertCircle className="w-4 h-4" /> 苦手単語リスト
+                </div>
+                <p className="text-3xl font-black text-slate-800">
+                  {mistakeWords.length}
+                  <span className="text-base font-medium text-slate-500 ml-1">単語</span>
+                </p>
+                <p className="text-xs text-slate-500 mt-1">テストで間違えた単語が自動追加されます</p>
+              </div>
+              <button
+                onClick={startMistakeDrill}
+                disabled={mistakeWords.length === 0}
+                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex flex-col items-center gap-1 ${mistakeWords.length === 0 ? 'bg-white text-slate-300 border border-dashed border-slate-200 cursor-not-allowed' : 'bg-amber-100 text-amber-700 border border-amber-200 hover:bg-amber-200'}`}
+              >
+                <Repeat className="w-4 h-4" />
+                苦手を練習
+              </button>
+            </div>
+            {mistakeWords.length > 0 && (
+              <div className="mt-3 text-xs text-slate-500">
+                <span className="font-bold text-slate-600">最近追加:</span>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {mistakeWords.slice(-5).map(word => (
+                    <span key={`${word.datasetId}-${word.id}`} className="bg-white px-2 py-1 rounded-full border border-slate-200 text-slate-600 font-semibold">
+                      {word.word}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -2563,29 +2836,63 @@ export default function App() {
     const currentWord = testWords[currentIndex];
     if (!currentWord) return null;
     const progressPercent = ((currentIndex + 1) / testWords.length) * 100;
+    const volumeProgress = Math.min(1, volumeLevel * VOLUME_VISUAL_MULTIPLIER);
+    const thresholdProgress = Math.min(1, VOICE_THRESHOLD * VOLUME_VISUAL_MULTIPLIER);
+    const isVolumeEnough = volumeLevel >= VOICE_THRESHOLD;
+    const answerButtonDisabled = flashcardPhase === 'question' && shouldEnforceVoiceTrigger && !voiceTriggerSatisfied;
+    const micStatusText = (() => {
+      if (!micModeEnabled) return 'OFF';
+      if (micStatus === 'requesting') return 'マイク許可待ち…';
+      if (micStatus === 'listening') return voiceTriggerSatisfied ? 'Good!' : '声を出してください';
+      if (micStatus === 'error') return 'マイクを利用できません';
+      if (micStatus === 'unsupported') return '未対応デバイスです';
+      return 'マイク待機中';
+    })();
 
     return (
-      <div className={`min-h-screen text-white flex flex-col items-center p-4 relative overflow-hidden transition-colors duration-500 ${isReviewMode ? 'bg-slate-800' : 'bg-slate-900'}`}>
+      <div className={`min-h-screen text-white flex flex-col items-center p-4 relative overflow-hidden transition-colors duration-500 ${isReviewMode ? 'bg-slate-800' : isMistakeMode ? 'bg-slate-800' : 'bg-slate-900'}`}>
         {isReviewMode && (
             <div className="absolute top-0 w-full bg-red-500/10 h-full pointer-events-none z-0"></div>
         )}
+        {isMistakeMode && !isReviewMode && (
+            <div className="absolute top-0 w-full bg-amber-400/10 h-full pointer-events-none z-0"></div>
+        )}
         
         <div className="w-full max-w-md absolute top-0 left-0 h-2 bg-slate-800 z-20">
-          <div className={`h-full transition-all duration-500 ease-out ${isReviewMode ? 'bg-red-500' : 'bg-green-500'}`} style={{ width: `${progressPercent}%` }} />
+          <div className={`h-full transition-all duration-500 ease-out ${isReviewMode ? 'bg-red-500' : isMistakeMode ? 'bg-amber-400' : 'bg-green-500'}`} style={{ width: `${progressPercent}%` }} />
         </div>
 
         <div className="w-full max-w-md mt-6 flex justify-between items-center text-sm text-slate-400 z-10">
           <span className="font-mono text-white font-bold">
             {isReviewMode && <span className="text-red-400 mr-2 font-bold animate-pulse">復習中 (全問正解まで継続)</span>}
+            {!isReviewMode && isMistakeMode && <span className="text-amber-300 mr-2 font-bold animate-pulse">苦手単語モード</span>}
             {currentIndex + 1} <span className="text-slate-600">/</span> {testWords.length}
           </span>
-          <button onClick={() => setAppState('home')} className="text-slate-500 hover:text-white">中断</button>
+          <button onClick={goHome} className="text-slate-500 hover:text-white">中断</button>
+        </div>
+
+        <div className="w-full max-w-md mt-4 z-10">
+          <button
+            type="button"
+            onClick={() => setMicModeEnabled(prev => !prev)}
+            aria-pressed={micModeEnabled}
+            className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl border text-[11px] font-bold tracking-widest uppercase transition ${micModeEnabled ? 'bg-emerald-500/10 border-emerald-300/40 text-emerald-100' : 'bg-slate-900/60 border-white/10 text-slate-300 hover:text-white'}`}
+          >
+            <span className="flex items-center gap-2">
+              {micModeEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+              VOICE TRIGGER
+            </span>
+            <span>{micModeEnabled ? 'ON' : 'OFF'}</span>
+          </button>
+          <div className={`text-[11px] mt-2 text-center ${micModeEnabled ? (voiceTriggerSatisfied ? 'text-emerald-200' : 'text-slate-300') : 'text-slate-400'}`}>
+            {micModeEnabled ? (micStatus === 'error' || micStatus === 'unsupported' ? 'マイクを検知できません。OFFモードをご利用ください。' : '声を出すと「答えを見る」ボタンが解放されます。') : 'OFFでは声を出さずにボタンを押せます。'}
+          </div>
         </div>
 
         {/* --- 共通: 単語表示エリア --- */}
         <div className="flex-1 w-full max-w-md flex flex-col justify-center items-center relative z-10">
           <div className="mb-10 relative">
-             <div className={`w-24 h-24 rounded-full flex items-center justify-center border-4 text-3xl font-bold transition-colors ${timeLeft <= 3 ? 'border-red-500 text-red-500' : (isReviewMode ? 'border-red-400 text-red-400' : 'border-indigo-500 text-indigo-400')}`}>
+             <div className={`w-24 h-24 rounded-full flex items-center justify-center border-4 text-3xl font-bold transition-colors ${timeLeft <= 3 ? 'border-red-500 text-red-500' : (isReviewMode ? 'border-red-400 text-red-400' : isMistakeMode ? 'border-amber-400 text-amber-200' : 'border-indigo-500 text-indigo-400')}`}>
                 {flashcardPhase === 'answer' ? <Layers className="w-10 h-10" /> : timeLeft}
              </div>
           </div>
@@ -2604,11 +2911,51 @@ export default function App() {
           </div>
         </div>
 
+        {micModeEnabled && (
+          <div className="w-full max-w-md mb-6 z-10">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 backdrop-blur-sm">
+              <div className="flex items-center justify-between text-[11px] uppercase tracking-widest text-slate-200 font-semibold mb-2">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-indigo-200" />
+                  VOICE LEVEL
+                </div>
+                <span className={`${voiceTriggerSatisfied ? 'text-emerald-200' : 'text-slate-300'}`}>{micStatusText}</span>
+              </div>
+              <div className="relative h-3 rounded-full bg-slate-900 overflow-hidden">
+                <div className={`absolute inset-y-0 left-0 ${voiceTriggerSatisfied ? 'bg-emerald-400' : 'bg-indigo-400'} transition-all duration-200`} style={{ width: `${volumeProgress * 100}%` }}></div>
+                <div className="absolute inset-y-0" style={{ left: `${thresholdProgress * 100}%` }}>
+                  <div className="w-0.5 h-full bg-white/60"></div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-slate-300 mt-2">
+                <span>音量: {Math.round(volumeProgress * 100)}%</span>
+                {isVolumeEnough ? (
+                  <span className="flex items-center gap-1 text-emerald-200 font-bold">
+                    <CheckCircle className="w-3 h-3" /> Good!
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-slate-400">
+                    <Layers className="w-3 h-3" />
+                    閾値ライン
+                  </span>
+                )}
+              </div>
+              {micStatus === 'error' && (
+                <p className="text-[11px] text-amber-200 mt-2">マイクを許可できない場合は、ホーム設定でマイクモードをOFFにしてください。</p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* --- 操作ボタン --- */}
         <div className="w-full max-w-md mb-8 z-10">
             {flashcardPhase === 'question' ? (
-                <button onClick={() => setFlashcardPhase('answer')} className={`w-full text-white font-bold py-4 rounded-xl shadow-lg transition-all active:scale-95 text-lg flex items-center justify-center gap-2 ${isReviewMode ? 'bg-red-600 hover:bg-red-700 shadow-red-900/50' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-900/50'}`}>
-                  <Eye className="w-5 h-5" /> 答えを見る <span className={`${isReviewMode ? 'text-red-300' : 'text-indigo-300'} text-xs font-normal ml-2`}>[Space]</span>
+                <button
+                  onClick={() => setFlashcardPhase('answer')}
+                  disabled={answerButtonDisabled}
+                  className={`w-full text-white font-bold py-4 rounded-xl shadow-lg transition-all active:scale-95 text-lg flex items-center justify-center gap-2 ${isReviewMode ? 'bg-red-600 hover:bg-red-700 shadow-red-900/50' : isMistakeMode ? 'bg-amber-500 hover:bg-amber-600 shadow-amber-900/30 text-slate-900' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-900/50'} ${answerButtonDisabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+                >
+                  <Eye className="w-5 h-5" /> 答えを見る <span className={`${isReviewMode ? 'text-red-300' : isMistakeMode ? 'text-amber-100' : 'text-indigo-300'} text-xs font-normal ml-2`}>[Space]</span>
                 </button>
             ) : (
                 <div className="flex gap-3">
@@ -2620,6 +2967,11 @@ export default function App() {
                     </button>
                 </div>
             )}
+            {isMistakeMode && (
+                <button onClick={handleRemoveCurrentMistakeWord} className="mt-3 w-full border border-amber-300 text-amber-200 hover:bg-white/10 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2">
+                  <XCircle className="w-4 h-4" /> この単語を苦手リストから外す
+                </button>
+            )}
         </div>
       </div>
     );
@@ -2630,7 +2982,53 @@ export default function App() {
     const actualCorrectCount = results.filter(r => r.isCorrect).length;
     const score = Math.round((actualCorrectCount / results.length) * 100) || 0;
     const wrongAnswers = results.filter(r => !r.isCorrect);
-    
+
+    if (isMistakeMode) {
+        const remaining = mistakeWords.length;
+        return (
+          <div className="min-h-screen bg-amber-50 flex flex-col items-center p-4 font-sans">
+            <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8 text-center">
+              <div className="w-14 h-14 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center mx-auto mb-4">
+                <Layers className="w-7 h-7" />
+              </div>
+              <h2 className="text-2xl font-bold text-slate-800 mb-2">苦手単語フラッシュカード</h2>
+              <p className="text-slate-500 text-sm mb-6">今回学習した単語: {results.length}語</p>
+
+              <div className="bg-slate-100 rounded-xl p-4 text-left mb-6">
+                <p className="text-sm text-slate-500">リストに残っている単語</p>
+                <p className="text-4xl font-black text-slate-800 mt-1">{remaining}<span className="text-base text-slate-500 font-medium ml-1">語</span></p>
+                {remaining === 0 && <p className="text-sm text-amber-500 mt-1 font-semibold">全て外せました！</p>}
+              </div>
+
+              {remaining > 0 ? (
+                <button onClick={startMistakeDrill} className="w-full bg-amber-500 hover:bg-amber-600 text-white font-bold py-4 rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 mb-3">
+                  <Repeat className="w-5 h-5" /> 残りを続けて練習
+                </button>
+              ) : (
+                <div className="mb-3 text-sm text-slate-500">リストは空です。通常のテストに戻りましょう！</div>
+              )}
+
+              <button onClick={goHome} className="w-full border border-slate-200 text-slate-600 font-bold py-4 rounded-xl hover:bg-slate-50 flex items-center justify-center gap-2">
+                <BookOpen className="w-5 h-5" /> ホームに戻る
+              </button>
+
+              {remaining > 0 && (
+                <div className="mt-6 text-left">
+                  <div className="text-xs font-bold text-slate-500 mb-2">現在のリスト</div>
+                  <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto">
+                    {mistakeWords.map(word => (
+                      <span key={`${word.datasetId}-${word.id}`} className="px-2 py-1 rounded-full bg-slate-100 text-slate-600 text-xs font-semibold border border-slate-200">
+                        {word.word}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+    }
+
     // 復習モードで全問正解した場合
     if (isReviewMode && wrongAnswers.length === 0) {
          return (
@@ -2645,7 +3043,7 @@ export default function App() {
                         苦手な {results.length} 単語をすべて克服しました。
                     </p>
 
-                    <button onClick={() => setAppState('home')} className="w-full max-w-sm bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-5 rounded-2xl shadow-lg shadow-indigo-900/50 text-xl flex items-center justify-center gap-2 transition-all transform active:scale-95">
+                    <button onClick={goHome} className="w-full max-w-sm bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-5 rounded-2xl shadow-lg shadow-indigo-900/50 text-xl flex items-center justify-center gap-2 transition-all transform active:scale-95">
                         <BookOpen className="w-6 h-6" /> ホームに戻る
                     </button>
                  </div>
@@ -2716,7 +3114,7 @@ export default function App() {
 
         <div className="fixed bottom-0 left-0 w-full bg-white border-t p-4 shadow-lg-top flex justify-center z-50 no-print">
           <div className="w-full max-w-md">
-            <button onClick={() => setAppState('home')} className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors">
+            <button onClick={goHome} className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors">
               <RotateCcw className="w-4 h-4" /> ホームに戻る <span className="text-slate-400 text-xs font-normal ml-2">[Enter]</span>
             </button>
           </div>
