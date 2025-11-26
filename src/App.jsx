@@ -2117,6 +2117,23 @@ const attachDatasetMetadata = (words, datasetId) =>
 
 const VOICE_THRESHOLD = 0.22;
 const VOLUME_VISUAL_MULTIPLIER = 4;
+const MISTAKE_STORAGE_KEY = 'word-test-app:mistakes';
+
+const readMistakeWordsFromStorage = () => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const serialized = window.localStorage.getItem(MISTAKE_STORAGE_KEY);
+    if (!serialized) return [];
+    const parsed = JSON.parse(serialized);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(word =>
+      word && typeof word === 'object' && typeof word.id === 'number' && word.datasetId
+    );
+  } catch (error) {
+    console.warn('Failed to load mistake words from storage', error);
+    return [];
+  }
+};
 
 // ==========================================
 // 3. メインコンポーネント
@@ -2148,7 +2165,7 @@ export default function App() {
   const [reviewTargetWords, setReviewTargetWords] = useState([]); // 復習で固定された単語リスト
   
   // 間違い単語リスト
-  const [mistakeWords, setMistakeWords] = useState([]);
+  const [mistakeWords, setMistakeWords] = useState(() => readMistakeWordsFromStorage());
   const [isMistakeMode, setIsMistakeMode] = useState(false);
 
   const [micModeEnabled, setMicModeEnabled] = useState(true);
@@ -2227,6 +2244,15 @@ export default function App() {
     if (!word) return;
     setMistakeWords(prev => prev.filter(item => !(item.id === word.id && item.datasetId === word.datasetId)));
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(MISTAKE_STORAGE_KEY, JSON.stringify(mistakeWords));
+    } catch (error) {
+      console.warn('Failed to persist mistake words', error);
+    }
+  }, [mistakeWords]);
 
   const goHome = useCallback(() => {
     setAppState('home');
