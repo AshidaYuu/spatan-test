@@ -812,6 +812,31 @@ const RAW_DATA_MASTER_800 = `1be〜である、いる、ある、存在する[�
 804global warming地球温暖化、おんだんか[グローバルウォーミング]
 805peace平和、へいわ[ピース]`;
 
+// --- データセット追加: イングリッシュゲート ---
+const RAW_DATA_ENGLISH_GATE = `1favoriteお気に入り
+2bank銀行
+3basketballバスケットボール
+4baseball野球
+5bookstore本屋
+6sleepy眠い
+7sing歌う
+8book本
+9science科学
+10school学校
+11sister姉／妹
+12pencilえんぴつ
+13speak話す
+14tennisテニス
+15student学生
+16study勉強する
+17swim泳ぐ
+18teaお茶
+19teacher先生
+20watch見る／腕時計
+21Nice to meet you.はじめまして。
+22Good bye.さようなら。
+23Have a nice day!よい一日を！`;
+
 // --- データセット2: 関正生 難関高校英単語 ---
 const RAW_DATA_SEKI_KOKO = `1cancel中止にする、取り消す[キャンセル]
 2cost（お金が）かかる、費用[コスト]
@@ -2027,6 +2052,11 @@ const DATA_SETS = {
     title: '英単語マスター 800',
     data: RAW_DATA_MASTER_800
   },
+  englishGate: {
+    id: 'englishGate',
+    title: 'イングリッシュゲート',
+    data: RAW_DATA_ENGLISH_GATE
+  },
   seki_koko: {
     id: 'seki_koko',
     title: '関正生 難関高校英単語 (1-405)',
@@ -2064,10 +2094,10 @@ const parseWordList = (rawData) => {
   
   return lines.map(line => {
     // フォーマット: ID + Word + Meaning + [Reading]
-    const match = line.match(/^(\d+)([a-zA-Z0-9\s\.\-\’\'\/]+)([^\[]+)(\[(.+?)\])?$/);
-    
+    const match = line.match(/^(\d+)([a-zA-Z0-9\s\.\-\’\'\/!\?]+)([^\[]+)(\[(.+?)\])?$/);
+
     if (!match) {
-      const fallbackMatch = line.match(/^(\d+)([a-zA-Z0-9\s\.\-\’\'\/]+?)(.*)$/);
+      const fallbackMatch = line.match(/^(\d+)([a-zA-Z0-9\s\.\-\’\'\/!\?]+?)(.*)$/);
       if (!fallbackMatch) {
         return { id: 0, word: line, meaning: 'Parse Error', pronunciation: '', variations: [] };
       }
@@ -2122,15 +2152,15 @@ const MISTAKE_STORAGE_KEY = 'word-test-app:mistakes';
 const readMistakeWordsFromStorage = () => {
   if (typeof window === 'undefined') return [];
   try {
-    const serialized = window.localStorage.getItem(MISTAKE_STORAGE_KEY);
-    if (!serialized) return [];
-    const parsed = JSON.parse(serialized);
+    const stored = window.localStorage.getItem(MISTAKE_STORAGE_KEY);
+    if (!stored) return [];
+    const parsed = JSON.parse(stored);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(word =>
       word && typeof word === 'object' && typeof word.id === 'number' && word.datasetId
     );
   } catch (error) {
-    console.warn('Failed to load mistake words from storage', error);
+    console.warn('Failed to read mistake words from storage', error);
     return [];
   }
 };
