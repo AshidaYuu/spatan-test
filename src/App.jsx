@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Play, RotateCcw, CheckCircle, XCircle, Trophy, Settings, BookOpen, Shuffle, ListOrdered, Volume2, Edit2, Clock, Download, Layers, Eye, ThumbsUp, ThumbsDown, Library, Keyboard, Repeat, AlertCircle, Sparkles, Mic, MicOff, Activity } from 'lucide-react';
+import { RAW_DATA_STOCK_3000 } from './data/stock3000';
 
 // ==========================================
 // 1. データセット定義
@@ -2066,6 +2067,11 @@ const DATA_SETS = {
     id: 'target1900',
     title: 'ターゲット1900 (1~800)',
     data: RAW_DATA_TARGET_1900
+  },
+  stock3000: {
+    id: 'stock3000',
+    title: 'Stock 3000',
+    data: RAW_DATA_STOCK_3000
   }
 };
 
@@ -2148,6 +2154,7 @@ const attachDatasetMetadata = (words, datasetId) =>
 const VOICE_THRESHOLD = 0.22;
 const VOLUME_VISUAL_MULTIPLIER = 4;
 const MISTAKE_STORAGE_KEY = 'word-test-app:mistakes';
+const QUESTION_MODE_STORAGE_KEY = 'word-test-app:question-mode';
 
 const readMistakeWordsFromStorage = () => {
   if (typeof window === 'undefined') return [];
@@ -2172,6 +2179,7 @@ const readMistakeWordsFromStorage = () => {
 export default function App() {
   const [appState, setAppState] = useState('home');
   const [selectedDatasetId, setSelectedDatasetId] = useState('master800');
+  const [questionMode, setQuestionMode] = useState('enToJa');
   
   // 選択されたデータセットに基づいて単語リストを生成
   const wordList = useMemo(() => {
@@ -2215,6 +2223,19 @@ export default function App() {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem('voice-trigger:mic-mode', micModeEnabled ? 'true' : 'false');
   }, [micModeEnabled]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const storedMode = window.localStorage.getItem(QUESTION_MODE_STORAGE_KEY);
+    if (storedMode === 'enToJa' || storedMode === 'jaToEn') {
+      setQuestionMode(storedMode);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(QUESTION_MODE_STORAGE_KEY, questionMode);
+  }, [questionMode]);
 
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
@@ -2486,12 +2507,9 @@ export default function App() {
   useEffect(() => {
     if (appState !== 'test') return;
     
-    // このEffectの実行が有効かどうかを判定するフラグ
     let isMounted = true;
-    
     const currentWord = testWords[currentIndex];
 
-    // 答えを表示している場合はタイマーを止める
     if (flashcardPhase === 'answer') {
         if (timerRef.current) {
              clearInterval(timerRef.current);
@@ -2500,7 +2518,6 @@ export default function App() {
         return; 
     }
     
-    // 初期化：残り時間をリセットし、既存タイマーをクリア
     setTimeLeft(timeLimit);
     if (timerRef.current) {
         clearInterval(timerRef.current);
@@ -2508,15 +2525,12 @@ export default function App() {
     }
 
     const startTimer = () => {
-        // マウントされていない、または既にタイマーが動いている場合は何もしない
         if (!isMounted) return;
         
-        // 既存のタイマーがあればクリア（二重起動防止の徹底）
         if (timerRef.current) {
              clearInterval(timerRef.current);
         }
 
-        // タイマー開始
         timerRef.current = setInterval(() => {
           if (!isMounted) {
               if (timerRef.current) clearInterval(timerRef.current);
@@ -2525,7 +2539,6 @@ export default function App() {
           setTimeLeft((prev) => {
             if (prev <= 1) {
               setFlashcardPhase('answer'); 
-              // タイマー停止
               if (timerRef.current) {
                   clearInterval(timerRef.current);
                   timerRef.current = null;
@@ -2537,32 +2550,7 @@ export default function App() {
         }, 1000);
     };
 
-    // 音声読み上げとタイマー開始のフロー
-    if (currentWord && flashcardPhase === 'question') {
-        const delayTimer = setTimeout(() => {
-            if (!isMounted) return;
-
-            speakWord(currentWord.word, () => {
-                // 音声読み上げ終了時のコールバック
-                if (isMounted) {
-                    startTimer();
-                }
-            });
-        }, 600);
-
-        // クリーンアップ関数
-        return () => {
-            isMounted = false;
-            clearTimeout(delayTimer);
-            if (timerRef.current) {
-                clearInterval(timerRef.current);
-                timerRef.current = null;
-            }
-            window.speechSynthesis.cancel();
-        };
-    } else if (flashcardPhase === 'question') {
-        // 音声なしですぐタイマー開始する場合
-        startTimer();
+    if (!currentWord || flashcardPhase !== 'question') {
         return () => {
             isMounted = false;
             if (timerRef.current) {
@@ -2572,15 +2560,37 @@ export default function App() {
         };
     }
 
-    // アンマウント時のクリーンアップ
+    if (questionMode === 'enToJa') {
+        const delayTimer = setTimeout(() => {
+            if (!isMounted) return;
+
+            speakWord(currentWord.word, () => {
+                if (isMounted) {
+                    startTimer();
+                }
+            });
+        }, 600);
+
+        return () => {
+            isMounted = false;
+            clearTimeout(delayTimer);
+            if (timerRef.current) {
+                clearInterval(timerRef.current);
+                timerRef.current = null;
+            }
+            window.speechSynthesis.cancel();
+        };
+    }
+
+    startTimer();
     return () => {
         isMounted = false;
         if (timerRef.current) {
-             clearInterval(timerRef.current);
-             timerRef.current = null;
+            clearInterval(timerRef.current);
+            timerRef.current = null;
         }
     };
-  }, [currentIndex, appState, speakWord, testWords, timeLimit, flashcardPhase]);
+  }, [currentIndex, appState, speakWord, testWords, timeLimit, flashcardPhase, questionMode]);
 
 
   const handleSelfCheck = useCallback((isCorrect) => {
@@ -2775,7 +2785,7 @@ export default function App() {
             </div>
           </div>
           <h1 className="text-2xl font-bold mb-2">英単語 暗記カード</h1>
-          <p className="text-slate-500 mb-8 text-sm">表示される単語の意味を答えよう！</p>
+          <p className="text-slate-500 mb-8 text-sm">英→日／日→英の2モードで瞬発力を鍛えよう！</p>
 
           <div className="bg-slate-100 rounded-lg p-6 mb-8 text-left space-y-6">
             
@@ -2791,6 +2801,30 @@ export default function App() {
                   <option key={dataset.id} value={dataset.id}>{dataset.title}</option>
                 ))}
               </select>
+            </div>
+
+            {/* 出題形式 */}
+            <div>
+              <div className="flex items-center gap-2 mb-2 text-slate-700 font-semibold"><Keyboard className="w-5 h-5" /><span>出題形式</span></div>
+              <div className="flex items-center justify-between bg-white p-1 rounded-lg border border-slate-200">
+                <button
+                  onClick={() => setQuestionMode('enToJa')}
+                  className={`flex-1 py-3 rounded-md text-sm font-bold transition-all flex flex-col gap-1 ${questionMode === 'enToJa' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                >
+                  <span className="text-base font-black">英 → 日</span>
+                  <span className="text-[10px] tracking-widest uppercase">Word → 意味</span>
+                </button>
+                <button
+                  onClick={() => setQuestionMode('jaToEn')}
+                  className={`flex-1 py-3 rounded-md text-sm font-bold transition-all flex flex-col gap-1 ${questionMode === 'jaToEn' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                >
+                  <span className="text-base font-black">日 → 英</span>
+                  <span className="text-[10px] tracking-widest uppercase">意味 → Word</span>
+                </button>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                {questionMode === 'enToJa' ? '英単語が表示されるので和訳を答えます。' : '日本語の意味が表示されるので英単語を答えます。'}
+              </p>
             </div>
 
             {/* マイクモード */}
@@ -2904,6 +2938,11 @@ export default function App() {
       if (micStatus === 'unsupported') return '未対応デバイスです';
       return 'マイク待機中';
     })();
+    const isEnglishQuestion = questionMode === 'enToJa';
+    const isEnglishVisible = isEnglishQuestion || flashcardPhase === 'answer';
+    const questionText = isEnglishQuestion ? currentWord.word : currentWord.meaning;
+    const questionHeadingClass = `${isEnglishQuestion ? 'text-5xl leading-tight' : 'text-3xl leading-relaxed'} font-extrabold tracking-tight break-words mb-4`;
+    const audioButtonTitle = isEnglishQuestion ? '英単語をもう一度聞く' : '答えの英単語を聞く';
 
     return (
       <div className={`min-h-screen text-white flex flex-col items-center p-4 relative overflow-hidden transition-colors duration-500 ${isReviewMode ? 'bg-slate-800' : isMistakeMode ? 'bg-slate-800' : 'bg-slate-900'}`}>
@@ -2955,13 +2994,31 @@ export default function App() {
 
           <div className="w-full bg-white text-slate-900 rounded-3xl p-8 text-center shadow-2xl mb-8 min-h-[220px] flex flex-col justify-center relative">
             <span className="text-sm text-slate-400 font-bold tracking-widest uppercase mb-2">No.{currentWord.id}</span>
-            <h2 className="text-5xl font-extrabold tracking-tight break-words mb-4 leading-tight">{currentWord.word}</h2>
-            <button onClick={() => speakWord(currentWord.word)} className="absolute top-4 right-4 p-2 text-indigo-200 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors" title="もう一度聞く"><Volume2 className="w-6 h-6" /></button>
+            <h2 className={questionHeadingClass}>{questionText}</h2>
+            {isEnglishVisible && (
+              <button
+                onClick={() => speakWord(currentWord.word)}
+                className="absolute top-4 right-4 p-2 text-indigo-200 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"
+                title={audioButtonTitle}
+              >
+                <Volume2 className="w-6 h-6" />
+              </button>
+            )}
             
             {flashcardPhase === 'answer' && (
                 <div className="mt-4 pt-4 border-t border-slate-100 animate-in fade-in slide-in-from-bottom-4">
-                    {currentWord.pronunciation && <p className="text-lg text-slate-500 mb-1">({currentWord.pronunciation})</p>}
-                    <p className="text-xl font-bold text-indigo-600">{currentWord.meaning}</p>
+                    {questionMode === 'enToJa' ? (
+                        <>
+                          {currentWord.pronunciation && <p className="text-lg text-slate-500 mb-1">({currentWord.pronunciation})</p>}
+                          <p className="text-xl font-bold text-indigo-600">{currentWord.meaning}</p>
+                        </>
+                    ) : (
+                        <>
+                          <p className="text-xs text-slate-400 font-semibold tracking-widest uppercase mb-1">英単語</p>
+                          <p className="text-3xl font-black text-slate-900">{currentWord.word}</p>
+                          {currentWord.pronunciation && <p className="text-lg text-slate-500 mt-1">({currentWord.pronunciation})</p>}
+                        </>
+                    )}
                 </div>
             )}
           </div>
