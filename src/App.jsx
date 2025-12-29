@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Play, RotateCcw, CheckCircle, XCircle, Trophy, Settings, BookOpen, Shuffle, ListOrdered, Volume2, Edit2, Clock, Download, Layers, Eye, ThumbsUp, ThumbsDown, Library, Keyboard, Repeat, AlertCircle, Sparkles, Mic, MicOff, Activity, Users } from 'lucide-react';
+import { Play, RotateCcw, CheckCircle, XCircle, Trophy, Settings, BookOpen, Shuffle, ListOrdered, Volume2, Edit2, Clock, Download, Layers, Eye, ThumbsUp, ThumbsDown, Library, Keyboard, Repeat, AlertCircle, Sparkles, Users } from 'lucide-react';
 import { RAW_DATA_STOCK_3000 } from './data/stock3000';
 import { RAW_DATA_TARGET_1200 } from './data/target1200';
 import { RAW_DATA_TARGET_1400 } from './data/target1400';
 import { RAW_DATA_TARGET_1900 } from './data/target1900';
 import { RAW_DATA_JUNIOR_HIGH_IDIOMS } from './data/junior_high_idioms';
+import { RAW_DATA_SUTASAPU_IDIOMS } from './data/sutasapu_idioms';
 import StudentManager from './components/StudentManager';
 import HistoryView from './components/HistoryView';
 import { getStudentMistakes, saveStudentMistakes, saveTestResult } from './utils/storage';
@@ -1294,6 +1295,11 @@ const DATA_SETS = {
     id: 'juniorHighIdioms',
     title: '中学英熟語',
     data: RAW_DATA_JUNIOR_HIGH_IDIOMS
+  },
+  sutasapuIdioms: {
+    id: 'sutasapuIdioms',
+    title: 'スタサプ英熟語',
+    data: RAW_DATA_SUTASAPU_IDIOMS
   }
 
 };
@@ -1375,7 +1381,6 @@ const attachDatasetMetadata = (words, datasetId) =>
   words.map(word => ({ ...word, datasetId }));
 
 const VOICE_THRESHOLD = 0.22;
-const VOLUME_VISUAL_MULTIPLIER = 4;
 const QUESTION_MODE_STORAGE_KEY = 'word-test-app:question-mode';
 
 
@@ -1401,12 +1406,12 @@ export default function App() {
   const [rangeStart, setRangeStart] = useState(1);
   const [rangeEnd, setRangeEnd] = useState(10);
   const [isRandom, setIsRandom] = useState(false);
-  const [timeLimit, setTimeLimit] = useState(10);
+  const [timeLimit, setTimeLimit] = useState(1);
   const [flashcardPhase, setFlashcardPhase] = useState('question');
 
   const [testWords, setTestWords] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(10);
+  const [timeLeft, setTimeLeft] = useState(1);
   const [results, setResults] = useState([]);
 
   // 復習モード用のState
@@ -1416,24 +1421,9 @@ export default function App() {
   // 間違い単語リスト
   const [mistakeWords, setMistakeWords] = useState([]);
   const [isMistakeMode, setIsMistakeMode] = useState(false);
+  const [isSpartanMode, setIsSpartanMode] = useState(false); // 徹底復習モード
+  const [showSpartanResetOverlay, setShowSpartanResetOverlay] = useState(false);
 
-  const [micModeEnabled, setMicModeEnabled] = useState(true);
-  const [micStatus, setMicStatus] = useState('idle');
-  const [volumeLevel, setVolumeLevel] = useState(0);
-  const [voiceTriggerSatisfied, setVoiceTriggerSatisfied] = useState(false);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const storedValue = window.localStorage.getItem('voice-trigger:mic-mode');
-    if (storedValue !== null) {
-      setMicModeEnabled(storedValue === 'true');
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem('voice-trigger:mic-mode', micModeEnabled ? 'true' : 'false');
-  }, [micModeEnabled]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1448,50 +1438,9 @@ export default function App() {
     window.localStorage.setItem(QUESTION_MODE_STORAGE_KEY, questionMode);
   }, [questionMode]);
 
-  const audioContextRef = useRef(null);
-  const analyserRef = useRef(null);
-  const dataArrayRef = useRef(null);
-  const mediaStreamRef = useRef(null);
-  const rafRef = useRef(null);
-  const voiceTriggerSatisfiedRef = useRef(false);
-
   const timerRef = useRef(null);
-  useEffect(() => {
-    voiceTriggerSatisfiedRef.current = voiceTriggerSatisfied;
-  }, [voiceTriggerSatisfied]);
-
-  const stopAudioMonitoring = useCallback(() => {
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-    if (analyserRef.current) {
-      try {
-        analyserRef.current.disconnect();
-      } catch (error) {
-        console.warn('Failed to disconnect analyser node', error);
-      }
-      analyserRef.current = null;
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-    dataArrayRef.current = null;
-    setVolumeLevel(0);
-  }, []);
-
-  const isMicOperational = micStatus !== 'error' && micStatus !== 'unsupported';
-  const shouldEnforceVoiceTrigger = micModeEnabled && isMicOperational;
-
-  useEffect(() => {
-    if (appState !== 'test' || flashcardPhase !== 'question') return;
-    setVoiceTriggerSatisfied(!shouldEnforceVoiceTrigger);
-  }, [appState, currentIndex, flashcardPhase, shouldEnforceVoiceTrigger]);
+  const spartanResetTimerRef = useRef(null);
+  const sessionCorrectCountsRef = useRef({}); // セッションごとの連続正解数管理
 
   const addWordToMistakeList = useCallback((word) => {
     if (!word) return;
@@ -1505,6 +1454,42 @@ export default function App() {
   const removeWordFromMistakeList = useCallback((word) => {
     if (!word) return;
     setMistakeWords(prev => prev.filter(item => !(item.id === word.id && item.datasetId === word.datasetId)));
+  }, []);
+
+  const executeSpartanReset = useCallback(() => {
+    if (spartanResetTimerRef.current) {
+      clearTimeout(spartanResetTimerRef.current);
+      spartanResetTimerRef.current = null;
+    }
+
+    // スパルタモードリセット時、2回連続正解した単語はリストから除外する
+    setTestWords(prev => {
+      // 現在の単語リストから、既にマスターした（2回連続正解）単語を除外
+      const nextWords = prev.filter(word => {
+        const key = `${word.datasetId}-${word.id}`;
+        return (sessionCorrectCountsRef.current[key] || 0) < 2;
+      });
+
+      // もし全てマスターしてしまった場合は、空配列を返して終了判定へ任せる
+      // （※この関数内で終了遷移まではしないが、Resultへの遷移は handleSelfCheck 側のフローで処理されるか、
+      //   もしくはここで空になった場合、次のレンダリングで何かハンドリングが必要かも。
+      //   現状のロジックだと空リストになると描画エラーになる可能性があるため、
+      //   ここでのフィルタリング後に空なら、強制的にリザルトへ飛ばすなどの処置が安全だが、
+      //   一旦空配列をセットし、useEffectなどで検知させるか、あるいは空の場合はリセットしない（=全クリ）扱いにする）
+
+      if (nextWords.length === 0) {
+        // 全単語マスター完了 -> 結果画面へ
+        setAppState('result');
+        return [];
+      }
+
+      return shuffleArray(nextWords);
+    });
+
+    setResults([]);
+    setCurrentIndex(0);
+    setFlashcardPhase('question');
+    setShowSpartanResetOverlay(false);
   }, []);
 
   // 生徒変更時に間違いリストを読み込み
@@ -1553,83 +1538,7 @@ export default function App() {
     setRangeStart(1);
   }, [wordList.length]);
 
-  useEffect(() => {
-    if (!micModeEnabled || appState !== 'test') {
-      stopAudioMonitoring();
-      setMicStatus('idle');
-      return;
-    }
 
-    if (!navigator?.mediaDevices?.getUserMedia) {
-      setMicStatus('unsupported');
-      return;
-    }
-
-    let isCancelled = false;
-
-    const setupMicrophone = async () => {
-      try {
-        setMicStatus('requesting');
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        if (isCancelled) {
-          stream.getTracks().forEach(track => track.stop());
-          return;
-        }
-
-        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContextClass) {
-          setMicStatus('unsupported');
-          stream.getTracks().forEach(track => track.stop());
-          return;
-        }
-
-        const audioCtx = new AudioContextClass();
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 2048;
-        const source = audioCtx.createMediaStreamSource(stream);
-        source.connect(analyser);
-
-        audioContextRef.current = audioCtx;
-        analyserRef.current = analyser;
-        mediaStreamRef.current = stream;
-        dataArrayRef.current = new Uint8Array(analyser.fftSize);
-
-        setMicStatus('listening');
-
-        const updateVolume = () => {
-          if (!analyserRef.current || !dataArrayRef.current) return;
-
-          analyserRef.current.getByteTimeDomainData(dataArrayRef.current);
-          let sumSquares = 0;
-          for (let i = 0; i < dataArrayRef.current.length; i += 1) {
-            const value = (dataArrayRef.current[i] - 128) / 128;
-            sumSquares += value * value;
-          }
-          const rms = Math.sqrt(sumSquares / dataArrayRef.current.length);
-          setVolumeLevel(rms);
-
-          if (micModeEnabled && !voiceTriggerSatisfiedRef.current && rms >= VOICE_THRESHOLD) {
-            setVoiceTriggerSatisfied(true);
-          }
-
-          rafRef.current = requestAnimationFrame(updateVolume);
-        };
-
-        updateVolume();
-      } catch (error) {
-        console.error('Microphone access failed', error);
-        setMicStatus('error');
-        stopAudioMonitoring();
-      }
-    };
-
-    setupMicrophone();
-
-    return () => {
-      isCancelled = true;
-      stopAudioMonitoring();
-    };
-  }, [micModeEnabled, appState, stopAudioMonitoring]);
 
   const speakWord = useCallback((text, datasetId, wordId, onEnd) => {
     // Custom Audio Logic for ALL datasets (MP3/M4A -> TTS)
@@ -1733,6 +1642,19 @@ export default function App() {
 
     if (reviewWords.length === 0) return;
 
+    // 変更: 徹底復習を始める前に、直前のテスト結果を保存する
+    if (!isReviewMode && !isMistakeMode && currentStudent) {
+      const actualCorrectCount = results.filter(r => r.isCorrect).length;
+      saveTestResult({
+        studentId: currentStudent.id,
+        datasetId: selectedDatasetId,
+        range: { start: rangeStart, end: rangeEnd },
+        score: actualCorrectCount,
+        total: results.length,
+        mistakes: results.filter(r => !r.isCorrect).length
+      });
+    }
+
     reviewWords = attachDatasetMetadata(reviewWords, selectedDatasetId);
     // 変更: 復習モードは設定に関わらず常にランダムにシャッフルする
     reviewWords = shuffleArray(reviewWords);
@@ -1742,6 +1664,9 @@ export default function App() {
     setTestWords(reviewWords);
     setIsReviewMode(true); // 復習モードON
     setIsMistakeMode(false);
+
+    // セッション正解数をリセット
+    sessionCorrectCountsRef.current = {};
 
     setCurrentIndex(0);
     setResults([]);
@@ -1759,6 +1684,10 @@ export default function App() {
     setResults([]);
     setFlashcardPhase('question');
     setIsMistakeMode(false);
+
+    // セッション正解数をリセット
+    sessionCorrectCountsRef.current = {};
+
     setAppState('test');
   }, [reviewTargetWords]); // isRandomへの依存を削除
 
@@ -1771,6 +1700,10 @@ export default function App() {
     setResults([]);
     setIsReviewMode(false);
     setIsMistakeMode(true);
+
+    // セッション正解数をリセット
+    sessionCorrectCountsRef.current = {};
+
     setFlashcardPhase('question');
     setAppState('test');
   }, [mistakeWords]);
@@ -1890,19 +1823,27 @@ export default function App() {
     const currentWord = testWords[currentIndex];
     if (!currentWord) return;
 
+    const key = `${currentWord.datasetId}-${currentWord.id}`;
+
     if (!isCorrect) {
       addWordToMistakeList(currentWord);
+      // 間違えたら連続正解数をリセット
+      sessionCorrectCountsRef.current[key] = 0;
+    } else {
+      // 正解したら連続正解数を +1 (undefinedなら1)
+      sessionCorrectCountsRef.current[key] = (sessionCorrectCountsRef.current[key] || 0) + 1;
     }
 
-    // --- 変更点: 復習モードのサドンデス機能 ---
-    if (isReviewMode && !isCorrect) {
-      alert("【復習モード】不正解！最初からやり直しです。（出題順をシャッフルします）");
-      setResults([]);
-      setCurrentIndex(0);
-      setFlashcardPhase('question');
+    // --- 変更点: 復習モード & スパルタモードのサドンデス機能 ---
+    // 修正: スパルタモードは「苦手モード」の時だけ有効にする (普通のテストには影響させない)
+    if ((isReviewMode || (isSpartanMode && isMistakeMode)) && !isCorrect) {
+      // alert削除 -> オーバーレイ表示へ変更
+      setShowSpartanResetOverlay(true);
 
-      // 変更: 設定に関わらず常にシャッフルしてリトライ
-      setTestWords(prev => shuffleArray([...prev]));
+      // 1.5秒後にリセット実行
+      spartanResetTimerRef.current = setTimeout(() => {
+        executeSpartanReset();
+      }, 1500);
 
       return;
     }
@@ -1927,7 +1868,7 @@ export default function App() {
     } else {
       setAppState('result');
     }
-  }, [testWords, currentIndex, isReviewMode, isRandom, addWordToMistakeList]);
+  }, [testWords, currentIndex, isReviewMode, isSpartanMode, isRandom, addWordToMistakeList, executeSpartanReset]);
 
   const handleToggleCorrect = (index) => {
     setResults(prev => {
@@ -1958,9 +1899,6 @@ export default function App() {
           // Space or Enter to show answer
           if (e.code === 'Space' || e.key === 'Enter' || e.key === 'ArrowDown') {
             e.preventDefault(); // Prevent scroll
-            if (shouldEnforceVoiceTrigger && !voiceTriggerSatisfied) {
-              return;
-            }
             setFlashcardPhase('answer');
           }
         } else if (flashcardPhase === 'answer') {
@@ -1985,7 +1923,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [appState, flashcardPhase, startTest, handleSelfCheck, goHome, shouldEnforceVoiceTrigger, voiceTriggerSatisfied]);
+  }, [appState, flashcardPhase, startTest, handleSelfCheck, goHome]);
 
 
   const handleDownloadPDF = () => {
@@ -2151,26 +2089,7 @@ export default function App() {
               </p>
             </div>
 
-            {/* マイクモード */}
-            <div className="bg-white rounded-lg border border-slate-200 p-4 flex items-center justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2 text-slate-700 font-semibold">
-                  {micModeEnabled ? <Mic className="w-4 h-4 text-indigo-600" /> : <MicOff className="w-4 h-4 text-slate-400" />}
-                  <span>マイクモード</span>
-                </div>
-                <p className="text-xs text-slate-500 mt-1">
-                  {micModeEnabled ? '声を出すと「答えを見る」ボタンが解放されます' : 'OFFにするとボタンは常に利用できます'}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setMicModeEnabled(prev => !prev)}
-                className={`relative inline-flex h-8 w-16 items-center rounded-full transition-colors ${micModeEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
-                aria-pressed={micModeEnabled}
-              >
-                <span className={`inline-block h-6 w-6 transform rounded-full bg-white shadow transition ${micModeEnabled ? 'translate-x-8' : 'translate-x-1'}`}></span>
-              </button>
-            </div>
+
 
             {/* 出題範囲 */}
             <div>
@@ -2219,14 +2138,33 @@ export default function App() {
                 </p>
                 <p className="text-xs text-slate-500 mt-1">テストで間違えた単語が自動追加されます</p>
               </div>
-              <button
-                onClick={startMistakeDrill}
-                disabled={mistakeWords.length === 0}
-                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex flex-col items-center gap-1 ${mistakeWords.length === 0 ? 'bg-white text-slate-300 border border-dashed border-slate-200 cursor-not-allowed' : 'bg-amber-100 text-amber-700 border border-amber-200 hover:bg-amber-200'}`}
-              >
-                <Repeat className="w-4 h-4" />
-                苦手を練習
-              </button>
+              <div className="flex flex-col items-stretch gap-3 w-48">
+                {mistakeWords.length > 0 && (
+                  <div
+                    onClick={() => setIsSpartanMode(prev => !prev)}
+                    className={`cursor-pointer border-2 rounded-xl p-2 transition-all group ${isSpartanMode ? 'bg-indigo-50 border-indigo-500' : 'bg-white border-slate-200 hover:border-indigo-300'}`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={`text-xs font-bold ${isSpartanMode ? 'text-indigo-700' : 'text-slate-600'}`}>徹底復習モード</span>
+                      <div className={`relative w-8 h-4 rounded-full transition-colors ${isSpartanMode ? 'bg-indigo-600' : 'bg-slate-300'}`}>
+                        <div className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-transform ${isSpartanMode ? 'translate-x-4' : 'translate-x-0'}`}></div>
+                      </div>
+                    </div>
+                    <div className="text-[9px] text-slate-500 leading-tight">
+                      1ミスで即終了＆リセット。<br />完璧を目指す鬼モード。
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  onClick={startMistakeDrill}
+                  disabled={mistakeWords.length === 0}
+                  className={`w-full py-3 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-sm active:scale-95 ${mistakeWords.length === 0 ? 'bg-white text-slate-300 border border-dashed border-slate-200 cursor-not-allowed' : isSpartanMode ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-200' : 'bg-amber-100 text-amber-700 border border-amber-200 hover:bg-amber-200'}`}
+                >
+                  <Repeat className="w-4 h-4" />
+                  {isSpartanMode ? '徹底復習開始' : '苦手を練習'}
+                </button>
+              </div>
             </div>
             {mistakeWords.length > 0 && (
               <div className="mt-3 text-xs text-slate-500">
@@ -2250,18 +2188,7 @@ export default function App() {
     const currentWord = testWords[currentIndex];
     if (!currentWord) return null;
     const progressPercent = ((currentIndex + 1) / testWords.length) * 100;
-    const volumeProgress = Math.min(1, volumeLevel * VOLUME_VISUAL_MULTIPLIER);
-    const thresholdProgress = Math.min(1, VOICE_THRESHOLD * VOLUME_VISUAL_MULTIPLIER);
-    const isVolumeEnough = volumeLevel >= VOICE_THRESHOLD;
-    const answerButtonDisabled = flashcardPhase === 'question' && shouldEnforceVoiceTrigger && !voiceTriggerSatisfied;
-    const micStatusText = (() => {
-      if (!micModeEnabled) return 'OFF';
-      if (micStatus === 'requesting') return 'マイク許可待ち…';
-      if (micStatus === 'listening') return voiceTriggerSatisfied ? 'Good!' : '声を出してください';
-      if (micStatus === 'error') return 'マイクを利用できません';
-      if (micStatus === 'unsupported') return '未対応デバイスです';
-      return 'マイク待機中';
-    })();
+    const answerButtonDisabled = false;
     const isEnglishQuestion = questionMode === 'enToJa';
     const isEnglishVisible = isEnglishQuestion || flashcardPhase === 'answer';
     const questionText = isEnglishQuestion ? currentWord.word : currentWord.meaning;
@@ -2288,24 +2215,6 @@ export default function App() {
             {currentIndex + 1} <span className="text-slate-600">/</span> {testWords.length}
           </span>
           <button onClick={goHome} className="text-slate-500 hover:text-white">中断</button>
-        </div>
-
-        <div className="w-full max-w-md mt-4 z-10">
-          <button
-            type="button"
-            onClick={() => setMicModeEnabled(prev => !prev)}
-            aria-pressed={micModeEnabled}
-            className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl border text-[11px] font-bold tracking-widest uppercase transition ${micModeEnabled ? 'bg-emerald-500/10 border-emerald-300/40 text-emerald-100' : 'bg-slate-900/60 border-white/10 text-slate-300 hover:text-white'}`}
-          >
-            <span className="flex items-center gap-2">
-              {micModeEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
-              VOICE TRIGGER
-            </span>
-            <span>{micModeEnabled ? 'ON' : 'OFF'}</span>
-          </button>
-          <div className={`text-[11px] mt-2 text-center ${micModeEnabled ? (voiceTriggerSatisfied ? 'text-emerald-200' : 'text-slate-300') : 'text-slate-400'}`}>
-            {micModeEnabled ? (micStatus === 'error' || micStatus === 'unsupported' ? 'マイクを検知できません。OFFモードをご利用ください。' : '声を出すと「答えを見る」ボタンが解放されます。') : 'OFFでは声を出さずにボタンを押せます。'}
-          </div>
         </div>
 
         {/* --- 共通: 単語表示エリア --- */}
@@ -2348,41 +2257,7 @@ export default function App() {
           </div>
         </div>
 
-        {micModeEnabled && (
-          <div className="w-full max-w-md mb-6 z-10">
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 backdrop-blur-sm">
-              <div className="flex items-center justify-between text-[11px] uppercase tracking-widest text-slate-200 font-semibold mb-2">
-                <div className="flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-indigo-200" />
-                  VOICE LEVEL
-                </div>
-                <span className={`${voiceTriggerSatisfied ? 'text-emerald-200' : 'text-slate-300'}`}>{micStatusText}</span>
-              </div>
-              <div className="relative h-3 rounded-full bg-slate-900 overflow-hidden">
-                <div className={`absolute inset-y-0 left-0 ${voiceTriggerSatisfied ? 'bg-emerald-400' : 'bg-indigo-400'} transition-all duration-200`} style={{ width: `${volumeProgress * 100}%` }}></div>
-                <div className="absolute inset-y-0" style={{ left: `${thresholdProgress * 100}%` }}>
-                  <div className="w-0.5 h-full bg-white/60"></div>
-                </div>
-              </div>
-              <div className="flex items-center justify-between text-[11px] text-slate-300 mt-2">
-                <span>音量: {Math.round(volumeProgress * 100)}%</span>
-                {isVolumeEnough ? (
-                  <span className="flex items-center gap-1 text-emerald-200 font-bold">
-                    <CheckCircle className="w-3 h-3" /> Good!
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1 text-slate-400">
-                    <Layers className="w-3 h-3" />
-                    閾値ライン
-                  </span>
-                )}
-              </div>
-              {micStatus === 'error' && (
-                <p className="text-[11px] text-amber-200 mt-2">マイクを許可できない場合は、ホーム設定でマイクモードをOFFにしてください。</p>
-              )}
-            </div>
-          </div>
-        )}
+
 
         {/* --- 操作ボタン --- */}
         <div className="w-full max-w-md mb-8 z-10">
@@ -2410,7 +2285,22 @@ export default function App() {
             </button>
           )}
         </div>
-      </div>
+
+        {/* Spartan Mode Reset Overlay */}
+        {showSpartanResetOverlay && (
+          <div className="absolute inset-0 z-50 bg-slate-900/95 flex flex-col items-center justify-center animate-in fade-in duration-300">
+            <div className="text-center p-8">
+              <div
+                onClick={executeSpartanReset}
+                className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-6 cursor-pointer hover:bg-slate-700 transition-colors active:scale-95"
+              >
+                <XCircle className="w-10 h-10 text-slate-500" />
+              </div>
+              <h2 className="text-2xl font-bold text-white mb-2">TRY AGAIN</h2>
+            </div>
+          </div>
+        )}
+      </div >
     );
   }
 
