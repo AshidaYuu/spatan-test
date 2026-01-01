@@ -9,6 +9,7 @@ import { RAW_DATA_SUTASAPU_IDIOMS } from './data/sutasapu_idioms';
 import StudentManager from './components/StudentManager';
 import HistoryView from './components/HistoryView';
 import { getStudentMistakes, saveStudentMistakes, saveTestResult } from './utils/storage';
+import TakedaApp from './TakedaApp';
 
 // ==========================================
 // 1. データセット定義
