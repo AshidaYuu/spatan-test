@@ -134,6 +134,10 @@ export default function BlockLearnView({ words, onComplete }) {
         );
     }
 
+    if (!currentWord) {
+        return <div className="p-10 text-center">Loading words...</div>;
+    }
+
     return (
         <div className="flex-1 flex flex-col items-center justify-center p-6 relative">
             <div className="absolute top-4 right-4 text-xs font-mono text-gray-500">
