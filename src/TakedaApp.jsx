@@ -1,16 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Activity, Zap, CheckCircle, AlertTriangle, Lock } from 'lucide-react';
 import { CurriculumManager } from './takeda/CurriculumManager';
+import { TakedaDataManager } from './takeda/DataManager';
 import TriageView from './takeda/TriageView';
 import SurvivalTestView from './takeda/SurvivalTestView';
-
-// Mock Data Source for Prototype
-const MOCK_WORDS = Array.from({ length: 50 }, (_, i) => ({
-    id: i + 1,
-    word: `Word-${i + 1}`,
-    pronunciation: `/wɜːrd ${i + 1}/`,
-    meaning: `単語の意味 ${i + 1}`
-}));
+import BlockLearnView from './takeda/BlockLearnView';
 
 export default function TakedaApp() {
     const [state, setState] = useState(CurriculumManager.getState());
@@ -20,19 +14,34 @@ export default function TakedaApp() {
     const [unknownWords, setUnknownWords] = useState([]);
 
     useEffect(() => {
+        // Load data on mount
         const info = CurriculumManager.getDayInfo(state.currentDay);
         setDayInfo(info);
-        // In real app, fetch from DB using info.range. For now, splice mock.
-        // Mocking 50 words for today
-        setCycleWords(MOCK_WORDS);
+
+        // Get REAL words from DataManager
+        // If range is valid
+        if (info.range) {
+            const words = TakedaDataManager.getRange(info.range.start, info.range.end);
+            setCycleWords(words);
+        }
     }, [state.currentDay]);
 
     const handleTriageComplete = (unknowns) => {
         setUnknownWords(unknowns);
         if (unknowns.length === 0) {
-            // All known! Skip to test? Or done?
-            // Strict mode usually requires test anyway.
-            setPhase('survival_test');
+            // All known! Skip to test to confirm mastery physically?
+            // Strict mode says: "If you know it, prove it."
+            // So we should go to Survival Test with ALL words to verify speed?
+            // Or just trust Triage? Triage is "Self Report".
+            // Takeda method usually tests everything.
+            // Let's Skip Learning but Test ALL if 0 unknowns? Or Test ALL anyway?
+            // Logic: Triage -> Learn Unknowns -> Test Unknowns (Loop) -> Test ALL (Confirmation)?
+            // For prototype simplification: Learn Unknowns -> Test Unknowns.
+            // If 0 unknowns, passed triage phase.
+            alert("Perfect Triage! But Strict Mode demands a check.");
+            setPhase('survival_test'); // Test all words if 0 unknowns, or just done?
+            // If unknowns is 0, let's treat it as "Test All Cycle Words" to prove it.
+            if (unknowns.length === 0) setUnknownWords(cycleWords);
         } else {
             setPhase('block_learn'); // Go to learning phase for unknowns
         }
@@ -49,11 +58,11 @@ export default function TakedaApp() {
             const newState = CurriculumManager.completeDay(state.currentDay, { score: 100 });
             setState(newState);
             setPhase('dashboard');
-            alert("MISION COMPLETE. DAY ADVANCED.");
         }
     };
 
-    const isGatekeeperPassed = false; // Mock
+    // Mock Gatekeeper for prototype
+    const isGatekeeperPassed = false;
 
     return (
         <div className="min-h-screen bg-black text-white font-sans selection:bg-green-500 selection:text-black">
@@ -81,7 +90,7 @@ export default function TakedaApp() {
                         </div>
 
                         {/* Gatekeeper Status */}
-                        {!isGatekeeperPassed && dayInfo.mode === 'advance' && (
+                        {!isGatekeeperPassed && dayInfo.mode === 'advance' && state.currentDay > 1 && (
                             <div className="w-full bg-red-900/20 border border-red-900/50 p-4 rounded-xl flex items-center justify-between">
                                 <div className="flex items-center gap-3">
                                     <Lock className="text-red-500 w-5 h-5" />
@@ -107,16 +116,7 @@ export default function TakedaApp() {
                 )}
 
                 {phase === 'block_learn' && (
-                    <div className="flex-1 flex flex-col items-center justify-center text-center">
-                        <h2 className="text-2xl font-bold mb-4">Memory Block</h2>
-                        <p className="mb-8 text-gray-400">{unknownWords.length} Unknown Words to Memorize</p>
-                        <button
-                            onClick={handleBlockLearnComplete}
-                            className="px-8 py-3 bg-blue-600 rounded-full font-bold"
-                        >
-                            Finished Memorizing -&gt; TEST
-                        </button>
-                    </div>
+                    <BlockLearnView words={unknownWords} onComplete={handleBlockLearnComplete} />
                 )}
 
                 {phase === 'survival_test' && (

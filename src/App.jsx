@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Play, RotateCcw, CheckCircle, XCircle, Trophy, Settings, BookOpen, Shuffle, ListOrdered, Volume2, Edit2, Clock, Download, Layers, Eye, ThumbsUp, ThumbsDown, Library, Keyboard, Repeat, AlertCircle, Sparkles, Users } from 'lucide-react';
+import { Play, RotateCcw, CheckCircle, XCircle, Trophy, Settings, BookOpen, Shuffle, ListOrdered, Volume2, Edit2, Clock, Download, Layers, Eye, ThumbsUp, ThumbsDown, Library, Keyboard, Repeat, AlertCircle, Sparkles, Users, Zap } from 'lucide-react';
 import { RAW_DATA_STOCK_3000 } from './data/stock3000';
 import { RAW_DATA_TARGET_1200 } from './data/target1200';
 import { RAW_DATA_TARGET_1400 } from './data/target1400';
@@ -1390,6 +1390,7 @@ const QUESTION_MODE_STORAGE_KEY = 'word-test-app:question-mode';
 // ==========================================
 
 export default function App() {
+  const [viewMode, setViewMode] = useState('default'); // 'default' | 'takeda'
   const [appState, setAppState] = useState('home');
   const [selectedDatasetId, setSelectedDatasetId] = useState('master800');
   const [questionMode, setQuestionMode] = useState('enToJa');
@@ -2016,6 +2017,21 @@ export default function App() {
   // UI Render
   // ==========================================
 
+  // Takeda Mode (The Zone) Interception
+  if (viewMode === 'takeda') {
+    return (
+      <div className="relative">
+        <TakedaApp />
+        <button
+          onClick={() => setViewMode('default')}
+          className="fixed top-4 right-4 z-[100] bg-gray-800 text-white px-3 py-1 text-xs rounded opacity-50 hover:opacity-100"
+        >
+          Exit The Zone
+        </button>
+      </div>
+    );
+  }
+
   if (!currentStudent) {
     return <StudentManager onSelectStudent={setCurrentStudent} />;
   }
@@ -2032,6 +2048,28 @@ export default function App() {
   if (appState === 'home') {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 text-slate-800 font-sans">
+        {/* NEW: The Zone Launch Button */}
+        <div className="w-full max-w-md mb-6">
+          <button
+            onClick={() => setViewMode('takeda')}
+            className="w-full bg-black text-white p-4 rounded-xl flex items-center justify-between group overflow-hidden relative"
+          >
+            <div className="absolute inset-0 bg-gradient-to-r from-gray-900 via-gray-800 to-black opacity-100 group-hover:scale-105 transition-transform duration-500"></div>
+            <div className="relative z-10 flex items-center gap-3">
+              <div className="p-2 bg-yellow-500/20 rounded-lg">
+                <Zap className="w-6 h-6 text-yellow-400 fill-yellow-400 animate-pulse" />
+              </div>
+              <div className="text-left">
+                <div className="text-xs text-gray-400 font-bold tracking-widest uppercase">New Feature</div>
+                <div className="text-lg font-black italic tracking-wide">THE ZONE <span className="text-xs font-normal text-gray-500 not-italic ml-1">(Day 1-28)</span></div>
+              </div>
+            </div>
+            <div className="relative z-10 bg-white/10 p-2 rounded-full">
+              <Play className="w-5 h-5 fill-white" />
+            </div>
+          </button>
+        </div>
+
         <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8 text-center">
 
           <div className="flex items-center justify-between w-full mb-6 border-b border-slate-100 pb-4">
