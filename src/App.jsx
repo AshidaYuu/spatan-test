@@ -1790,16 +1790,26 @@ export default function App() {
       const delayTimer = setTimeout(() => {
         if (!isMounted) return;
 
-        speakWord(currentWord.word, currentWord.datasetId, currentWord.id, () => {
-          if (isMounted) {
+        let audioFinished = false;
+        const startTimerSafe = () => {
+          if (isMounted && !audioFinished) {
+            audioFinished = true;
             startTimer();
           }
-        });
+        };
+
+        // 音声再生（コールバックでタイマー開始）
+        speakWord(currentWord.word, currentWord.datasetId, currentWord.id, startTimerSafe);
+
+        // 安全策: 音声が再生されなかったり、コールバックが呼ばれなかった場合のために
+        // 3秒後に強制的にタイマーを開始する
+        setTimeout(startTimerSafe, 3000);
       }, 600);
 
       return () => {
         isMounted = false;
         clearTimeout(delayTimer);
+        // 安全策タイマーのクリアは厳密には難しい（変数がない）が、startTimerSafe内でisMountedチェックしているのでOK
         if (timerRef.current) {
           clearInterval(timerRef.current);
           timerRef.current = null;
