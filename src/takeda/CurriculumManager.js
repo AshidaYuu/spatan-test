@@ -2,7 +2,6 @@
 
 const TAKEDA_STORAGE_KEY = 'takeda_progress_v1';
 const CYCLE_LENGTH = 7;
-const DAILY_WORDS_QUOTA = 50;
 
 // 4 Days Advance, 2 Days Review, 1 Day Test
 const CYCLE_SCHEDULE = {
@@ -19,14 +18,21 @@ const DEFAULT_STATE = {
     currentDay: 1, // Global Day (1-28 for 4 weeks)
     totalWordsLearned: 0,
     dailyHistory: {}, // { "1": { status: "completed", mistakes: [] } }
-    lastAccess: null
+    lastAccess: null,
+    settings: {
+        wordsPerDay: 50,
+        datasetId: 'master800'
+    }
 };
 
 export const CurriculumManager = {
     getState() {
         if (typeof window === 'undefined') return DEFAULT_STATE;
         const json = localStorage.getItem(TAKEDA_STORAGE_KEY);
-        return json ? JSON.parse(json) : DEFAULT_STATE;
+        const loaded = json ? JSON.parse(json) : DEFAULT_STATE;
+        // Merge settings for backward compatibility
+        if (!loaded.settings) loaded.settings = DEFAULT_STATE.settings;
+        return loaded;
     },
 
     saveState(state) {
@@ -39,8 +45,18 @@ export const CurriculumManager = {
         return DEFAULT_STATE;
     },
 
+    updateSettings(newSettings) {
+        const state = this.getState();
+        state.settings = { ...state.settings, ...newSettings };
+        this.saveState(state);
+        return state;
+    },
+
     // Get current cycle status
     getDayInfo(dayNumber) {
+        const state = this.getState();
+        const { wordsPerDay } = state.settings || DEFAULT_STATE.settings;
+
         const cycleDay = ((dayNumber - 1) % CYCLE_LENGTH) + 1;
         const week = Math.ceil(dayNumber / CYCLE_LENGTH);
         const mode = CYCLE_SCHEDULE[cycleDay];
@@ -48,25 +64,19 @@ export const CurriculumManager = {
         // Determine word range
         let start, end;
         if (mode === 'advance') {
-            // e.g. Day 1 -> 1-50, Day 2 -> 51-100...
-            // Previous Advance Days in this cycle: (cycleDay - 1) * 50
-            // Previous Weeks words: (week - 1) * 200
-            // Actually, simplest is just global calculation based on "Advance Days" passed.
-            // But Takeda method is strict: 50 words per *advance* day.
-            // Let's assume dayNumber maps directly if strictly followed.
-            // Better: Calculate how many "advance" days have happened up to this point.
-
             const advanceDaysBefore = this.countAdvanceDays(dayNumber - 1);
-            start = (advanceDaysBefore * DAILY_WORDS_QUOTA) + 1;
-            end = start + DAILY_WORDS_QUOTA - 1;
+            start = (advanceDaysBefore * wordsPerDay) + 1;
+            end = start + wordsPerDay - 1;
         } else if (mode === 'review') {
-            // Review all words from current week (200 words)
-            start = ((week - 1) * 200) + 1;
-            end = start + 200 - 1;
+            // Review all words from current week (4 advance days * wordsPerDay)
+            const wordsPerWeek = wordsPerDay * 4;
+            start = ((week - 1) * wordsPerWeek) + 1;
+            end = start + wordsPerWeek - 1;
         } else {
             // Test day: Same as review, full week
-            start = ((week - 1) * 200) + 1;
-            end = start + 200 - 1;
+            const wordsPerWeek = wordsPerDay * 4;
+            start = ((week - 1) * wordsPerWeek) + 1;
+            end = start + wordsPerWeek - 1;
         }
 
         return {
@@ -96,11 +106,6 @@ export const CurriculumManager = {
             timestamp: Date.now(),
             results // Store any specific stats
         };
-
-        // Auto-advance to next day? Or wait for user?
-        // User might want to redo. 
-        // Usually we just mark complete.
-        // Ideally we assume user moves to next day on next session if "today" is done.
 
         if (dayNumber === state.currentDay) {
             state.currentDay = dayNumber + 1;
